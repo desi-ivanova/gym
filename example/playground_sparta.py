@@ -194,7 +194,7 @@ def main():
     )  # gpt2_small or gpt2_sbase
     arg_parser.add_argument("--run_name", type=str, default="sparta-run")
     arg_parser.add_argument(
-        "--index_selector", type=str, default="max_momentum"
+        "--index_selector", type=str, default="max_grad"
     )  # random, max_grad, max_param, max_momentum
     args = arg_parser.parse_args()
     print(
@@ -253,7 +253,7 @@ def main():
             "cosine_anneal": True,
         },
         max_norm=1.0,
-        p=0.02,
+        p_sparta=0.02,
         index_selector=args.index_selector,
     )
 
