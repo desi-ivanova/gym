@@ -253,7 +253,7 @@ def main():
             "cosine_anneal": True,
         },
         max_norm=1.0,
-        p=0.005,
+        p=0.02,
         index_selector=args.index_selector,
     )
 
