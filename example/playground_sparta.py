@@ -190,7 +190,7 @@ def main():
     arg_parser.add_argument("--dataset", type=str, default="owt")
     # add gpt2_small v gpt_sbase as argument
     arg_parser.add_argument(
-        "--model", type=str, default="gpt2_small"
+        "--model", type=str, default="gpt2_sbase"
     )  # gpt2_small or gpt2_sbase
     arg_parser.add_argument("--run_name", type=str, default="sparta-run")
     arg_parser.add_argument(
@@ -269,7 +269,7 @@ def main():
         shuffle=False,
         val_size=256,
         val_interval=100,
-        wandb_project="sparta",
+        wandb_project="sparta_gpt2_sbase",
         run_name=args.run_name,
     )
 
