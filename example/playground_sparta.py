@@ -35,6 +35,10 @@ class RandomIndexSelector(IndexSelector):
         return torch.bernoulli(
             torch.full(param.shape, self.p, device=param.device)
         ).bool()
+    
+    def log_difference(self, param, mask, iteration):
+        # no difference statistic for random selector
+        pass
 
 
 class MaxGradIndexSelector(IndexSelector):
