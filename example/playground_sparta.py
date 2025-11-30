@@ -306,7 +306,7 @@ def main():
         shuffle=False,
         val_size=256,
         val_interval=100,
-        wandb_project="sparta_gpt2_sbase",
+        wandb_project=f"sparta_{args.model}_{args.dataset}",
         run_name=(
             args.run_name
             if args.run_name is not None
