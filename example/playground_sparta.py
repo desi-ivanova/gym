@@ -54,7 +54,7 @@ class MaxGradIndexSelector(IndexSelector):
     # add a utility that logs the difference between the average gradient of the selected indices
     # and the average gradient of the whole parameter;
     def log_difference(self, param: Tensor, mask: Tensor, iteration: int):
-        avg_grad_selected = param.grad[mask].abs().mean().item()
+        avg_grad_selected = param.grad[mask > 0].abs().mean().item()
         avg_grad = param.grad.abs().mean().item()
         if wandb.run is not None and (iteration + 1) % 100 == 0:
             wandb.log(
@@ -75,7 +75,7 @@ class MaxParamIndexSelector(IndexSelector):
         return mask.view(param.shape)
 
     def log_difference(self, param: Tensor, mask: Tensor, iteration: int):
-        avg_param_selected = param.abs()[mask].mean().item()
+        avg_param_selected = param.abs()[mask > 0].mean().item()
         avg_param = param.abs().mean().item()
         if wandb.run is not None and (iteration + 1) % 100 == 0:
             wandb.log(
@@ -117,7 +117,7 @@ class MaxMomentumIndexSelector(IndexSelector):
         momentum_buffer = self._get_momentum_buffer(param)
         if momentum_buffer is None:
             return
-        avg_momentum_selected = momentum_buffer.abs()[mask].mean().item()
+        avg_momentum_selected = momentum_buffer.abs()[mask > 0].mean().item()
         avg_momentum = momentum_buffer.abs().mean().item()
         if wandb.run is not None and (iteration + 1) % 100 == 0:
             wandb.log(
@@ -207,7 +207,12 @@ class SPARTAStrategy(Strategy):
                 sparse_data /= self.num_nodes
                 param.masked_scatter_(indices_mask, sparse_data)
 
-        if overlaps and realised_p and wandb.run is not None and self.local_step % 100 == 0:
+        if (
+            overlaps
+            and realised_p
+            and wandb.run is not None
+            and self.local_step % 100 == 0
+        ):
             wandb.log(
                 {f"avg_sel_overlap_rank_{self.rank}": sum(overlaps) / len(overlaps)},
                 step=self.local_step,
@@ -239,7 +244,7 @@ def main():
     arg_parser.add_argument("--p_sparta", type=float, default=0.01)
     args = arg_parser.parse_args()
     print(
-        f"Using dataset: {args.dataset}, model: {args.model}, run name: {args.run_name}"
+        f"Using dataset: {args.dataset}, model: {args.model}, run name: {args.run_name}, p_sparta: {args.p_sparta}, index_selector: {args.index_selector}"
     )
 
     # Get datasets - this will take a while the first time, as the dataset has to be imported and processed.
