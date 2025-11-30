@@ -14,7 +14,7 @@ from exogym.aux.utils import get_device
 
 from nanogpt import GPT, GPTConfig, get_dataset
 
-NUM_NODES = 4
+NUM_NODES = 2
 
 ### PLAYGROUND
 ### This is a minimal configuration for training a nanogpt model with a given strategy.
@@ -35,7 +35,7 @@ class RandomIndexSelector(IndexSelector):
         return torch.bernoulli(
             torch.full(param.shape, self.p, device=param.device)
         ).bool()
-    
+
     def log_difference(self, param, mask, iteration):
         # no difference statistic for random selector
         pass
@@ -47,8 +47,8 @@ class MaxGradIndexSelector(IndexSelector):
     ) -> Tensor:
         k = max(1, int(self.p * param.numel()))
         _, indices = torch.topk(param.grad.abs().view(-1), k)
-        mask = torch.zeros(param.numel(), dtype=torch.bool, device=param.device)
-        mask[indices] = True
+        mask = torch.zeros(param.numel(), dtype=torch.uint8, device=param.device)
+        mask[indices] = 1
         return mask.view(param.shape)
 
     # add a utility that logs the difference between the average gradient of the selected indices
@@ -70,8 +70,8 @@ class MaxParamIndexSelector(IndexSelector):
     ) -> Tensor:
         k = max(1, int(self.p * param.numel()))
         _, indices = torch.topk(param.abs().view(-1), k)
-        mask = torch.zeros(param.numel(), dtype=torch.bool, device=param.device)
-        mask[indices] = True
+        mask = torch.zeros(param.numel(), dtype=torch.uint8, device=param.device)
+        mask[indices] = 1
         return mask.view(param.shape)
 
     def log_difference(self, param: Tensor, mask: Tensor, iteration: int):
@@ -109,11 +109,11 @@ class MaxMomentumIndexSelector(IndexSelector):
 
         k = max(1, int(self.p * param.numel()))
         _, indices = torch.topk(momentum_buffer.abs().view(-1), k)
-        mask = torch.zeros(param.numel(), dtype=torch.bool, device=param.device)
-        mask[indices] = True
+        mask = torch.zeros(param.numel(), dtype=torch.uint8, device=param.device)
+        mask[indices] = 1
         return mask.view(param.shape)
 
-    def log_difference(self, param, mask, iteration):
+    def log_difference(self, param: Tensor, mask: Tensor, iteration: int):
         momentum_buffer = self._get_momentum_buffer(param)
         if momentum_buffer is None:
             return
@@ -153,10 +153,13 @@ class SPARTAStrategy(Strategy):
             else OptimSpec.from_str(optim_spec)
         )
         self.index_selector = index_selector
+        self.prev_masks = {}
 
     def step(self):
+        overlaps = []
+        realised_p = []
         with torch.no_grad():
-            for param in self.model.parameters():
+            for name, param in self.model.named_parameters():
                 # possibly also skip self.local_step == 0
                 if not param.requires_grad or param.grad is None:
                     continue
@@ -164,6 +167,17 @@ class SPARTAStrategy(Strategy):
                 indices_mask = self.index_selector.get_indices(
                     param, self.local_step, optim_state=optim_state
                 )
+                # for debugging: log overlap of elements
+                if self.local_step % 100 == 0 and self.rank == 0:
+                    prev_mask = self.prev_masks.get(name)
+                    if prev_mask is not None:
+                        overlap = (indices_mask & prev_mask).float().sum() / (
+                            indices_mask | prev_mask
+                        ).float().sum()
+                        overlaps.append(overlap.item())
+                        # print("Updating params in rank: *", self.rank, "step: *", self.local_step, "\n")
+                    self.prev_masks[name] = indices_mask.clone()
+
                 # log difference statistic
                 if self.index_selector_name == "max_momentum":
                     self.index_selector.log_difference(
@@ -173,13 +187,31 @@ class SPARTAStrategy(Strategy):
                     self.index_selector.log_difference(
                         param, indices_mask, self.local_step
                     )
-
-                broadcast(indices_mask, src=0)  # does this send to other nodes?
+                # rather than broadcast, let's do a sum (all reduce) - gives union
+                # of selected indices; max params = p_sparta * num_nodes (if no overlap)
+                # broadcast(indices_mask, src=0)
+                all_reduce(indices_mask, op=torch.distributed.ReduceOp.SUM)
+                indices_mask = indices_mask > 0
+                # log the fraction of parameters selected
+                if self.local_step % 100 == 0:
+                    frac_selected = indices_mask.float().mean().item()
+                    realised_p.append(frac_selected)
+                    # wandb.log({"p_realised": frac_selected}, step=self.local_step)
                 sparse_data = param.data[indices_mask]
                 # all reduce across the four nodes
                 all_reduce(sparse_data, op=torch.distributed.ReduceOp.SUM)
                 sparse_data /= self.num_nodes
                 param.masked_scatter_(indices_mask, sparse_data)
+
+        if overlaps and realised_p and wandb.run is not None and self.local_step % 100 == 0:
+            wandb.log(
+                {f"avg_sel_overlap_rank_{self.rank}": sum(overlaps) / len(overlaps)},
+                step=self.local_step,
+            )
+            wandb.log(
+                {f"realised_p_rank_{self.rank}": sum(realised_p) / len(realised_p)},
+                step=self.local_step,
+            )
 
         self.optim.step()
         super().step()
@@ -192,10 +224,15 @@ def main():
     arg_parser.add_argument(
         "--model", type=str, default="gpt2_sbase"
     )  # gpt2_small or gpt2_sbase
-    arg_parser.add_argument("--run_name", type=str, default="sparta-run")
+    arg_parser.add_argument("--run_name", type=str, default=None)
     arg_parser.add_argument(
-        "--index_selector", type=str, default="max_grad"
-    )  # random, max_grad, max_param, max_momentum
+        "--index_selector",
+        type=str,
+        default="max_param",
+        choices=list(INDEX_SELECTORS.keys()),
+    )
+    # add p_sparta as argument
+    arg_parser.add_argument("--p_sparta", type=float, default=0.01)
     args = arg_parser.parse_args()
     print(
         f"Using dataset: {args.dataset}, model: {args.model}, run name: {args.run_name}"
@@ -253,7 +290,7 @@ def main():
             "cosine_anneal": True,
         },
         max_norm=1.0,
-        p_sparta=0.02,
+        p_sparta=args.p_sparta,
         index_selector=args.index_selector,
     )
 
@@ -270,7 +307,11 @@ def main():
         val_size=256,
         val_interval=100,
         wandb_project="sparta_gpt2_sbase",
-        run_name=args.run_name,
+        run_name=(
+            args.run_name
+            if args.run_name is not None
+            else f"sparta_{args.index_selector}_p{args.p_sparta}"
+        ),
     )
 
 
