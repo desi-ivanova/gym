@@ -45,3 +45,8 @@ python3 playground_sparta.py --run_name=max_momentum --dataset=owt --index_selec
 ### momentum 
 
 `self.optim.state[param]`
+
+
+## LR scheduler
+- it seems like LR scheduler was never set (indeed the progress bar never updated the `lr` param, it was always at 0)
+- add `_init_node` method, following `SimpleReduceStrategy`

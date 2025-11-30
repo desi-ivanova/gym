@@ -155,6 +155,10 @@ class SPARTAStrategy(Strategy):
         self.index_selector = index_selector
         self.prev_masks = {}
 
+    def _init_node(self, model, rank, num_nodes):
+        super()._init_node(model, rank, num_nodes)
+        self._setup_scheduler()
+
     def step(self):
         overlaps = []
         realised_p = []
